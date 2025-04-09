@@ -47,6 +47,8 @@ class ModelExecutioner:
 		self.runs_dir = runs_dir
 		self.weights_dir = weights_dir
 		self.model_name = model_name
+
+		device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 		self.device = device
 		self.criterion = criterion.to(self.device)
 		self.use_scheduler = use_scheduler
@@ -278,10 +280,10 @@ class ModelExecutioner:
 
 			return mean_acc_top_k
 
-
 	def torch_devices_info(self):
-			print("----------------------------------------------------------------")
-			print("Is there a GPU available: {}".format(torch.cuda.is_available()))
+		print("----------------------------------------------------------------")
+		print("Is there a GPU available: {}".format(torch.cuda.is_available()))
+		if torch.cuda.is_available():
 			print("Number of allocated devices: {}".format(torch.cuda.device_count()))
 			curr_device_id = torch.cuda.current_device()
 			print("Index of current device: {}".format(curr_device_id))

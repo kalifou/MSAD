@@ -43,7 +43,9 @@ def train_deep_model(
 
 	# Set up
 	window_size = int(re.search(r'\d+', str(args.path)).group())
-	device = 'cuda'
+    
+	# device = 'cuda'
+	device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 	save_runs = 'results/runs/'
 	save_weights = 'results/weights/'
 	inf_time = True 		# compute inference time per timeseries
