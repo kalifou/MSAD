@@ -204,4 +204,4 @@ class TimeseriesDataset(Dataset):
 		# for detector, weight in zip(detector_names, sklearn_class_weights):
 		# 	print(f'{detector} : {counter[detector_names.index(detector)]}, {weight:.3f}')
 
-		return torch.Tensor(sklearn_class_weights).to(device)
+		return torch.Tensor(sklearn_class_weights) #.to(device)

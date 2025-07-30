@@ -22,10 +22,10 @@ TSB_scores_path = "data/TSB/scores/"
 TSB_acc_tables_path = "data/TSB/acc_tables/"
 
 
-ESA_ADB_data_path = "data/ESA_ADB/data/"
-ESA_ADB_metrics_path = "data/ESA_ADB/metrics/"
-ESA_ADB_scores_path = "data/ESA_ADB/scores/"
-ESA_ADB_acc_tables_path = "data/TSB/acc_tables/"
+ESA_ADB_data_path = "data/ESA_ADB/data/preprocessed/multivariate/"
+ESA_ADB_metrics_path = "data/ESA_ADB_25_07_25//metrics/"
+ESA_ADB_scores_path = "data/ESA_ADB_25_07_25/scores/"
+ESA_ADB_acc_tables_path = "data/ESA_ADB_25_07_25/acc_tables/"
 
 save_done_training = 'results/done_training/'	# when a model is done training a csv with training info is saved here
 path_save_results = 'results/raw_predictions'	# when evaluating a model, the predictions will be saved here
@@ -34,16 +34,16 @@ path_save_results = 'results/raw_predictions'	# when evaluating a model, the pre
 detector_names = [
 	'AE', 
 	'CNN', 
-	'HBOS', 
-	'IFOREST', 
-	'IFOREST1', 
-	'LOF', 
-	'LSTM', 
-	'MP', 
-	'NORMA', 
-	'OCSVM', 
-	'PCA', 
-	'POLY'
+ 	'HBOS', 
+ 	'IFOREST', 
+ 	'IFOREST1', 
+ 	'LOF', 
+ 	'LSTM', 
+ 	'MP', 
+ 	'NORMA', 
+ 	'OCSVM', 
+ 	'PCA', 
+ 	'POLY'
 ]
 
 

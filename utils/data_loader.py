@@ -18,116 +18,165 @@ from tqdm import tqdm
 
 
 class DataLoader:
-	"""This class is used to read and load data from the benchmark.
-	When the object is created the path to the benchmark directory
-	should be given.
-	"""
+    """This class is used to read and load data from the benchmark.
+    When the object is created the path to the benchmark directory
+    should be given.
+    """
 
-	def __init__(self, data_path):
-		self.data_path = data_path
-
-
-	def get_dataset_names(self):
-		'''Returns the names of existing datasets. 
-		Careful, this function will not return any files in the given
-		directory but only the names of the sub-directories
-		as they are the datasets (not the timeseries).
-
-		:return: list of datasets' names (list of strings)
-		'''
-		names = os.listdir(self.data_path)
-
-		return [x for x in names if os.path.isdir(os.path.join(self.data_path, x))]
-		
-
-	def load(self, dataset):
-		'''
-		Loads the specified datasets
-
-		:param dataset: list of datasets
-		:return x: timeseries
-		:return y: corresponding labels
-		:return fnames: list of names of the timeseries loaded
-		'''
-		x = []
-		y = []
-		fnames = []
+    def __init__(self, data_path):
+        self.data_path = data_path
 
 
-		if not isinstance(dataset, list):
-			raise ValueError('only accepts list of str')
+    def get_dataset_names(self):
+        '''Returns the names of existing datasets. 
+        Careful, this function will not return any files in the given
+        directory but only the names of the sub-directories
+        as they are the datasets (not the timeseries).
 
-		pbar = tqdm(dataset)
-		for name in pbar:
-			pbar.set_description('Loading ' + name)
-			for fname in glob.glob(os.path.join(self.data_path, name, '*.out')):
-				curr_data = pd.read_csv(fname, header=None).to_numpy()
-				
-				if curr_data.ndim != 2:
-					raise ValueError('did not expect this shape of data: \'{}\', {}'.format(fname, curr_data.shape))
+        :return: list of datasets' names (list of strings)
+        '''
+        names = os.listdir(self.data_path)
 
-				# Skip files with no anomalies
-				if not np.all(curr_data[0, 1] == curr_data[:, 1]):
-					x.append(curr_data[:, 0])
-					y.append(curr_data[:, 1])
-					# Remove path from file name, keep dataset, time series name
-					fname = '/'.join(fname.split('/')[-2:])		
-					fnames.append(fname.replace(self.data_path, ''))
-					
-		return x, y, fnames
+        return [x for x in names if os.path.isdir(os.path.join(self.data_path, x))]
+        
+
+    def load(self, dataset):
+        '''
+        Loads the specified datasets
+
+        :param dataset: list of datasets
+        :return x: timeseries
+        :return y: corresponding labels
+        :return fnames: list of names of the timeseries loaded
+        '''
+        x = []
+        y = []
+        fnames = []
+
+        #import ipdb
+        #ipdb.set_trace(context=50)
+
+        if not isinstance(dataset, list):
+            raise ValueError('only accepts list of str')
+
+        pbar = tqdm(dataset)
+        for name in pbar:
+            
+            pbar.set_description('Loading ' + name)
+            
+            data_file_extension = '*.out'
+            
+            if "ESA-Mission1-semi-supervised" in dataset:
+                data_file_extension = '*.csv'
+                
+            for fname in glob.glob(os.path.join(self.data_path, name, data_file_extension)):
+                
+                curr_data = pd.read_csv(fname, header=None).to_numpy()
+                
+                #import ipdb
+                #ipdb.set_trace(context=50)
+                
+                if curr_data.ndim != 2:
+                    raise ValueError('did not expect this shape of data: \'{}\', {}'.format(fname, curr_data.shape))
+
+                # Skip files with no anomalies
+                if not np.all(curr_data[0, 1] == curr_data[:, 1]):
+                    x.append(curr_data[:, 0])
+                    y.append(curr_data[:, 1])
+                    # Remove path from file name, keep dataset, time series name
+                    fname = '/'.join(fname.split('/')[-2:])        
+                    fnames.append(fname.replace(self.data_path, ''))
+                    
+        return x, y, fnames
 
 
-	def load_df(self, dataset):
-		'''
-		Loads the time series of the given datasets and returns a dataframe
+    def load_df(self, dataset):
+        '''
+        Loads the time series of the given datasets and returns a dataframe
 
-		:param dataset: list of datasets
-		:return df: a single dataframe of all loaded time series
-		'''
-		df_list = []
-		pbar = tqdm(dataset)
+        :param dataset: list of datasets
+        :return df: a single dataframe of all loaded time series
+        '''
+        df_list = []
+        pbar = tqdm(dataset)
 
-		if not isinstance(dataset, list):
-			raise ValueError('only accepts list of str')
+        if not isinstance(dataset, list):
+            raise ValueError('only accepts list of str')
 
-		for name in pbar:
-			pbar.set_description(f'Loading {name}')
-			
-			for fname in glob.glob(os.path.join(self.data_path, name, '*.csv')):
-				curr_df = pd.read_csv(fname, index_col=0)
-				curr_index = [os.path.join(name, x) for x in list(curr_df.index)]
-				curr_df.index = curr_index
+        for name in pbar:
+            pbar.set_description(f'Loading {name}')
+            
+            for fname in glob.glob(os.path.join(self.data_path, name, '*.csv')):
+                curr_df = pd.read_csv(fname, index_col=0)
+                curr_index = [os.path.join(name, x) for x in list(curr_df.index)]
+                curr_df.index = curr_index
 
-				df_list.append(curr_df)
-				
-		df = pd.concat(df_list)
+                df_list.append(curr_df)
+                
+        df = pd.concat(df_list)
 
-		return df
+        return df
 
+    def load_esa_adb_df(self, dataset, channel_index=33, test_mode=False):
+        
+        from TSB_UAD.utils.utility_esa_adb import get_channel_values_and_labels
+        
+        name = dataset[0]
+        path_to_esa_dataset = glob.glob(os.path.join(self.data_path, name, '*.csv'))
+        
+        
+        
+        # def main(model_name, 
+        #          path_to_esa_dataset, 
+        #          path_to_save_logs,
+        #          channel_index_of_interrest, 
+        #          test_mode,
+        #          activate_plot, 
+        #          n_jobs=1):
+            
+        df_esa_dataset = pd.read_csv(path_to_esa_dataset[0])
+        
+        m1_values, m1_labels = get_channel_values_and_labels(channel_index=channel_index, 
+                                                             dataframe=df_esa_dataset)
+        
+        #import ipdb
+        #ipdb.set_trace(context=50)
+        
+        #name_to_dataset_split = path_to_esa_dataset.split('/')[-2] + "-" + path_to_esa_dataset.split('/')[-1].split('.')[0]
+        #whole_name_experiments = name_to_dataset_split + "-ch-" + str(channel_index_of_interrest)
+        max_length = 50000000
 
-	def load_timeseries(self, timeseries):
-		'''
-		Loads specified timeseries
+        if test_mode:
+            max_length = 5000
+        
+        data = m1_values[:max_length].astype(float)
+        label = m1_labels[:max_length].astype(int)
+        
+        return [data], [label], path_to_esa_dataset
+        
+    def load_timeseries(self, timeseries):
+        '''
+        Loads specified timeseries
 
-		:param fnames: list of file names
-		:return x: timeseries
-		:return y: corresponding labels
-		:return fnames: list of names of the timeseries loaded
-		'''
-		x = []
-		y = []
-		fnames = []
+        :param fnames: list of file names
+        :return x: timeseries
+        :return y: corresponding labels
+        :return fnames: list of names of the timeseries loaded
+        '''
+        x = []
+        y = []
+        fnames = []
 
-		for fname in tqdm(timeseries, desc='Loading timeseries'):
-			curr_data = pd.read_csv(os.path.join(self.data_path, fname), header=None).to_numpy()
-			
-			if curr_data.ndim != 2:
-				raise ValueError('did not expect this shape of data: \'{}\', {}'.format(fname, curr_data.shape))
+        for fname in tqdm(timeseries, desc='Loading timeseries'):
+            curr_data = pd.read_csv(os.path.join(self.data_path, fname), header=None).to_numpy()
+            
+            if curr_data.ndim != 2:
+                raise ValueError('did not expect this shape of data: \'{}\', {}'.format(fname, curr_data.shape))
 
-			# Skip files with no anomalies
-			if not np.all(curr_data[0, 1] == curr_data[:, 1]):
-				x.append(curr_data[:, 0])
-				y.append(curr_data[:, 1])
-				fnames.append(fname)
+            # Skip files with no anomalies
+            if not np.all(curr_data[0, 1] == curr_data[:, 1]):
+                x.append(curr_data[:, 0])
+                y.append(curr_data[:, 1])
+                fnames.append(fname)
 
-		return x, y, fnames
+        return x, y, fnames
