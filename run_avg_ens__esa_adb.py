@@ -48,7 +48,9 @@ def create_avg_ens(n_jobs=1, source_dataset="TSB_UAD", channel_id=-1):
     if source_dataset == "TSB_UAD":
         x, y, fnames = dataloader.load(datasets)
     else:
-        x, y, fnames = dataloader.load_esa_adb_df(datasets, test_mode=False)
+        x, y, fnames = dataloader.load_esa_adb_df(datasets, 
+                                                  test_mode=False,
+                                                  channel_index=channel_id)
     
     # Load scores
     scoresloader = ScoresLoader(scores_path)
@@ -72,8 +74,6 @@ def create_avg_ens(n_jobs=1, source_dataset="TSB_UAD", channel_id=-1):
     # Create Avg_ens
     avg_ens = Avg_ens()
     metric_values = avg_ens.fit(y, scores, metrics, n_jobs=n_jobs)
-    
-    fnames = [f_i + "--channel-" + str(channel_id) for f_i in fnames]
     
     for metric in metrics:
         # Write metric values for avg_ens

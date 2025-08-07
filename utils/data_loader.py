@@ -116,7 +116,21 @@ class DataLoader:
         df = pd.concat(df_list)
 
         return df
-
+    
+    def load_esa_adb_multichannel_df(self, dataset, channel_list, test_mode=False):
+        
+        dataset_list, labels_list, path_list = list(), list(), list()
+        
+        for ch_i in channel_list:
+            local_dataset_list, local_label_list, local_path_list = self.load_esa_adb_df(dataset=dataset, 
+                                                                                    channel_index=ch_i,
+                                                                                    test_mode=test_mode)
+            dataset_list += local_dataset_list
+            labels_list += local_label_list
+            path_list += local_path_list
+        
+        return dataset_list, labels_list, path_list
+    
     def load_esa_adb_df(self, dataset, channel_index=33, test_mode=False):
         
         from TSB_UAD.utils.utility_esa_adb import get_channel_values_and_labels
@@ -125,25 +139,11 @@ class DataLoader:
         path_to_esa_dataset = glob.glob(os.path.join(self.data_path, name, '*.csv'))
         
         
-        
-        # def main(model_name, 
-        #          path_to_esa_dataset, 
-        #          path_to_save_logs,
-        #          channel_index_of_interrest, 
-        #          test_mode,
-        #          activate_plot, 
-        #          n_jobs=1):
-            
         df_esa_dataset = pd.read_csv(path_to_esa_dataset[0])
         
         m1_values, m1_labels = get_channel_values_and_labels(channel_index=channel_index, 
                                                              dataframe=df_esa_dataset)
         
-        #import ipdb
-        #ipdb.set_trace(context=50)
-        
-        #name_to_dataset_split = path_to_esa_dataset.split('/')[-2] + "-" + path_to_esa_dataset.split('/')[-1].split('.')[0]
-        #whole_name_experiments = name_to_dataset_split + "-ch-" + str(channel_index_of_interrest)
         max_length = 50000000
 
         if test_mode:
@@ -151,6 +151,8 @@ class DataLoader:
         
         data = m1_values[:max_length].astype(float)
         label = m1_labels[:max_length].astype(int)
+        
+        path_to_esa_dataset = [path_to_esa_dataset[0] + "@Channel_" + str(channel_index)] 
         
         return [data], [label], path_to_esa_dataset
         
