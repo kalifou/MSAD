@@ -66,6 +66,7 @@ def create_tmp_dataset(
     # Delete any data not in metrics (some timeseries metric scores were not computed)
     idx_to_delete = [i for i, x in enumerate(fnames) if x not in metrics_data.index]
 
+    #ipdb.set_trace(context=25)
     metrics_data = metrics_data[detector_names]
    
     filename_merged_metrics = "mergedTable_" + metric + ".csv"
