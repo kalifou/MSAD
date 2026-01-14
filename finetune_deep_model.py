@@ -1,26 +1,10 @@
 ########################################################################
-#
-# @title : Finetuning Script
-# @description: Finetune pretrained MSAD models on ESA-ADB with:
-#               - LoRA
-#               - Layer-wise discriminative learning rates
-#               - Cosine annealing with warmup
-#               - Stochastic Weight Averaging (SWA)
-#               - Gradient clipping
-#               - Mixed precision training
-#
-# Example:
-#   python3 finetune_deep_model.py \
-#       --path=data/TSB_512/ \
-#       --model=convnet \
-#       --weights=results/weights/supervised/convnet_default_512/model_30012023_173428 \
-#       --params=models/configuration/convnet_default.json
-# ########################################################################
+# Universal Finetuning Script for All MSAD Architectures
+# Supports: ConvNet, ResNet, InceptionTime, Transformer (SIT)
+########################################################################
 
 from tqdm import tqdm
-from sklearn.metrics import (
-    accuracy_score, f1_score, top_k_accuracy_score, confusion_matrix
-)
+from sklearn.metrics import accuracy_score, f1_score, top_k_accuracy_score, confusion_matrix
 from torch.cuda.amp import GradScaler, autocast
 from torch.optim.swa_utils import AveragedModel, SWALR
 from torch.utils.data import DataLoader
@@ -37,12 +21,9 @@ import os
 import re
 import json
 import copy
-from pathlib import Path
 from datetime import datetime
-from collections import defaultdict
 import warnings
 warnings.filterwarnings('ignore')
-
 
 try:
     from utils.timeseries_dataset import create_splits, TimeseriesDataset
@@ -50,103 +31,72 @@ try:
     from utils.config import deep_models
     MSAD_AVAILABLE = True
 except ImportError:
-    print("ERROR: MSAD utils not found. Please ensure 'utils' folder is in PYTHONPATH.")
+    print("ERROR: MSAD utils not found")
     MSAD_AVAILABLE = False
 
 
-class LoRALayer(nn.Module):
+# ============================================================================
+# LoRA Implementation
+# ============================================================================
 
+class LoRALayer(nn.Module):
     def __init__(self, in_features, out_features, rank=8, alpha=16.0, dropout=0.1):
         super().__init__()
-        self.rank = rank
-        self.alpha = alpha
+        self.rank, self.alpha = rank, alpha
         self.scaling = alpha / rank
-
-        # Low-rank matrices
         self.lora_A = nn.Parameter(torch.zeros(rank, in_features))
         self.lora_B = nn.Parameter(torch.zeros(out_features, rank))
         self.dropout = nn.Dropout(dropout)
-
-        # Initialize
         nn.init.kaiming_uniform_(self.lora_A, a=np.sqrt(5))
         nn.init.zeros_(self.lora_B)
 
     def forward(self, x, original_weight, bias=None):
-        # Original forward pass
         result = F.linear(x, original_weight, bias)
-
-        # LoRA adaptation: x @ A^T @ B^T
         lora_result = self.dropout(x) @ self.lora_A.T @ self.lora_B.T
-
         return result + lora_result * self.scaling
 
 
 class LoRALinear(nn.Module):
-    """Wrapper for Linear layer with LoRA"""
-
     def __init__(self, linear_layer, rank=8, alpha=16.0):
         super().__init__()
         self.linear = linear_layer
-
-        # Freeze original weights
         self.linear.weight.requires_grad = False
         if self.linear.bias is not None:
             self.linear.bias.requires_grad = False
-
-        self.lora = LoRALayer(
-            linear_layer.in_features,
-            linear_layer.out_features,
-            rank=rank,
-            alpha=alpha
-        )
+        self.lora = LoRALayer(linear_layer.in_features,
+                              linear_layer.out_features, rank, alpha)
 
     def forward(self, x):
         return self.lora(x, self.linear.weight, self.linear.bias)
 
 
 def apply_lora_to_model(model, rank=8, alpha=16.0, verbose=True):
-    """
-    Apply LoRA to all Linear layers except the final classifier.
-    """
+    """Apply LoRA to Linear layers (for Transformers mainly)"""
     total_before = sum(p.numel()
                        for p in model.parameters() if p.requires_grad)
-
     to_replace = []
-
-    # classifier layer names:
-    # sit.py -> cls_layer
-    # resnet.py -> final
-    # inception_time.py -> linear
-    # convnet.py -> fc1
     classifier_keywords = ['classifier', 'cls_layer',
-                           'final', 'fc1', 'head', 'output']
+                           'final', 'fc', 'head', 'output', 'linear']
 
     for name, module in model.named_modules():
         if isinstance(module, nn.Linear):
-            # Check if this linear layer belongs to a classifier block
-            is_classifier = False
-            for k in classifier_keywords:
-                if k in name:
-                    is_classifier = True
-                    break
-
-            if is_classifier:
+            # Skip final classifier unless in feed-forward block
+            is_classifier = any(k in name.lower() for k in classifier_keywords)
+            if is_classifier and not any(ff in name.lower() for ff in ['feed_forward', 'mlp', 'ff']):
                 continue
-
             to_replace.append((name, module))
 
-    # Apply replacements
     lora_applied = []
     for name, module in to_replace:
-        # Get parent module
+        current_device = next(module.parameters()).device
+
         *parent_path, child_name = name.split('.')
         parent = model
         for p in parent_path:
             parent = getattr(parent, p)
 
-        # Replace
-        lora_linear = LoRALinear(module, rank=rank, alpha=alpha)
-        setattr(parent, child_name, lora_linear)
+        lora_layer = LoRALinear(module, rank, alpha).to(current_device)
+        setattr(parent, child_name, lora_layer)
         lora_applied.append(name)
 
     total_after = sum(p.numel() for p in model.parameters() if p.requires_grad)
@@ -155,7 +105,11 @@ def apply_lora_to_model(model, rank=8, alpha=16.0, verbose=True):
         print(f"\n{'='*70}")
         print(f"LoRA Applied to {len(lora_applied)} layers")
         print(f"{'='*70}")
-        print(f"Trainable parameters: {total_before:,} -> {total_after:,}")
+        for layer in lora_applied[:5]:
+            print(f"  - {layer}")
+        if len(lora_applied) > 5:
+            print(f"  ... and {len(lora_applied) - 5} more")
+        print(f"\nTrainable: {total_before:,} -> {total_after:,}")
         if total_before > 0:
             print(f"Reduction: {100*(1 - total_after/total_before):.1f}%")
         print(f"{'='*70}\n")
@@ -163,103 +117,282 @@ def apply_lora_to_model(model, rank=8, alpha=16.0, verbose=True):
     return model, lora_applied
 
 
-def get_layer_wise_optimizer(model, config):
-    """
-    Create optimizer with discriminative learning rates based on relative depth.
+# ============================================================================
+# Architecture Detection
+# ============================================================================
 
-    Logic based on provided model files:
-    1. Head (High LR): Identified by names like 'cls_layer' (SIT), 'final' (ResNet), 'fc1' (ConvNet).
-    2. Backbone (Variable LR): Split into Early (first 40%) and Middle (next 60%).
-    """
-    head_params = []
-    backbone_params_list = []  # List of (name, param)
+def detect_architecture(model):
+    """Detect model architecture"""
+    name = model.__class__.__name__.lower()
+    if 'convnet' in name or 'cnn' in name:
+        return 'convnet'
+    elif 'resnet' in name:
+        return 'resnet'
+    elif 'inception' in name:
+        return 'inception'
+    elif 'transformer' in name or 'sit' in name or 'signal' in name:
+        return 'transformer'
 
-    head_keywords = ['cls_layer', 'final', 'fc1', 'linear']
+    # Infer from structure
+    for n, m in model.named_modules():
+        if 'transformer' in n.lower() or 'attention' in n.lower():
+            return 'transformer'
+        if 'resnet' in n.lower() or 'residual' in n.lower():
+            return 'resnet'
+    return 'convnet'  # Default
 
-    # 1. Separate Head and Backbone
+
+# ============================================================================
+# Layer Freezing
+# ============================================================================
+
+def freeze_layers(model, architecture, freeze_ratio=0.3, verbose=True):
+    """Architecture-aware layer freezing"""
+    frozen, trainable = 0, 0
+
+    if architecture == 'convnet':
+        layers_per_block = 3
+        num_blocks = len(model.layers) // layers_per_block
+        freeze_blocks = max(1, int(num_blocks * freeze_ratio))
+        freeze_up_to = freeze_blocks * layers_per_block
+
+        for i, module in enumerate(model.layers):
+            for param in module.parameters():
+                if i < freeze_up_to:
+                    param.requires_grad = False
+                    frozen += param.numel()
+                else:
+                    param.requires_grad = True
+                    trainable += param.numel()
+        for param in model.fc1.parameters():
+            param.requires_grad = True
+            trainable += param.numel()
+
+    elif architecture == 'resnet':
+        num_blocks = len(model.layers)
+        freeze_blocks = max(1, int(num_blocks * freeze_ratio))
+
+        for i, block in enumerate(model.layers):
+            for param in block.parameters():
+                if i < freeze_blocks:
+                    param.requires_grad = False
+                    frozen += param.numel()
+                else:
+                    param.requires_grad = True
+                    trainable += param.numel()
+        for param in model.final.parameters():
+            param.requires_grad = True
+            trainable += param.numel()
+
+    elif architecture == 'inception':
+        num_blocks = len(model.blocks) if hasattr(model, 'blocks') else 6
+        freeze_blocks = max(1, int(num_blocks * freeze_ratio))
+
+        if hasattr(model, 'blocks'):
+            for i, block in enumerate(model.blocks):
+                for param in block.parameters():
+                    if i < freeze_blocks:
+                        param.requires_grad = False
+                        frozen += param.numel()
+                    else:
+                        param.requires_grad = True
+                        trainable += param.numel()
+        if hasattr(model, 'linear'):
+            for param in model.linear.parameters():
+                param.requires_grad = True
+                trainable += param.numel()
+
+    elif architecture == 'transformer':
+        if hasattr(model, 'encoder') and hasattr(model.encoder, 'layers'):
+            num_layers = len(model.encoder.layers)
+            freeze_layers_count = max(1, int(num_layers * freeze_ratio))
+
+            for i, layer in enumerate(model.encoder.layers):
+                for param in layer.parameters():
+                    if i < freeze_layers_count:
+                        param.requires_grad = False
+                        frozen += param.numel()
+                    else:
+                        param.requires_grad = True
+                        trainable += param.numel()
+
+        # Freeze embeddings
+        if hasattr(model, 'to_patch_embedding'):
+            for param in model.to_patch_embedding.parameters():
+                param.requires_grad = False
+                frozen += param.numel()
+
+        # Train classifier
+        if hasattr(model, 'cls_layer'):
+            for param in model.cls_layer.parameters():
+                param.requires_grad = True
+                trainable += param.numel()
+
+    if verbose:
+        print(f"\n{'='*70}")
+        print(f"FREEZING EARLY LAYERS ({architecture.upper()})")
+        print(f"{'='*70}")
+        print(f"Frozen: {frozen:,} | Trainable: {trainable:,}")
+        if frozen + trainable > 0:
+            print(f"Trainable ratio: {100*trainable/(frozen+trainable):.1f}%")
+        print(f"{'='*70}\n")
+
+    return model
+
+
+# ============================================================================
+# Progressive Unfreezing
+# ============================================================================
+
+def get_unfreeze_schedule(model, architecture, num_epochs, unfreeze_every=5):
+    """Create progressive unfreezing schedule"""
+    if architecture == 'convnet':
+        num_units = len(model.layers) // 3 if hasattr(model, 'layers') else 5
+    elif architecture == 'resnet':
+        num_units = len(model.layers) if hasattr(model, 'layers') else 3
+    elif architecture == 'inception':
+        num_units = len(model.blocks) if hasattr(model, 'blocks') else 6
+    elif architecture == 'transformer':
+        num_units = len(model.encoder.layers) if hasattr(
+            model, 'encoder') else 4
+    else:
+        num_units = 4
+
+    schedule = [min(1 + (e // unfreeze_every), num_units)
+                for e in range(num_epochs)]
+    return schedule
+
+
+def apply_unfreeze(model, architecture, blocks_to_train):
+    """Unfreeze last N blocks/layers"""
+    for param in model.parameters():
+        param.requires_grad = False
+
+    if architecture == 'convnet':
+        num_blocks = len(model.layers) // 3
+        unfreeze_from = max(0, (num_blocks - blocks_to_train) * 3)
+        for i, m in enumerate(model.layers):
+            if i >= unfreeze_from:
+                for p in m.parameters():
+                    p.requires_grad = True
+        for p in model.fc1.parameters():
+            p.requires_grad = True
+
+    elif architecture == 'resnet':
+        unfreeze_from = max(0, len(model.layers) - blocks_to_train)
+        for i, block in enumerate(model.layers):
+            if i >= unfreeze_from:
+                for p in block.parameters():
+                    p.requires_grad = True
+        for p in model.final.parameters():
+            p.requires_grad = True
+
+    elif architecture == 'inception' and hasattr(model, 'blocks'):
+        unfreeze_from = max(0, len(model.blocks) - blocks_to_train)
+        for i, block in enumerate(model.blocks):
+            if i >= unfreeze_from:
+                for p in block.parameters():
+                    p.requires_grad = True
+        if hasattr(model, 'linear'):
+            for p in model.linear.parameters():
+                p.requires_grad = True
+
+    elif architecture == 'transformer':
+        if hasattr(model, 'encoder') and hasattr(model.encoder, 'layers'):
+            unfreeze_from = max(0, len(model.encoder.layers) - blocks_to_train)
+            for i, layer in enumerate(model.encoder.layers):
+                if i >= unfreeze_from:
+                    for p in layer.parameters():
+                        p.requires_grad = True
+        if hasattr(model, 'cls_layer'):
+            for p in model.cls_layer.parameters():
+                p.requires_grad = True
+
+
+# ============================================================================
+# Layer-wise Learning Rates
+# ============================================================================
+
+def get_layerwise_optimizer(model, architecture, config, verbose=True):
+    """Architecture-aware layer-wise LR"""
+    early, middle, head = [], [], []
+
+    # Define keywords per architecture
+    if architecture == 'convnet':
+        classifier_kw = 'fc1'
+        early_kw = ['layers.0', 'layers.1', 'layers.2',
+                    'layers.3', 'layers.4', 'layers.5']
+        middle_kw = ['layers.6', 'layers.7',
+                     'layers.8', 'layers.9', 'layers.10']
+    elif architecture == 'resnet':
+        classifier_kw = 'final'
+        early_kw = ['layers.0']
+        middle_kw = ['layers.1', 'layers.2']
+    elif architecture == 'inception':
+        classifier_kw = 'linear'
+        early_kw = ['blocks.0', 'blocks.1']
+        middle_kw = ['blocks.2', 'blocks.3', 'blocks.4']
+    elif architecture == 'transformer':
+        classifier_kw = 'cls_layer'
+        early_kw = ['patch_embedding',
+                    'transformer.layers.0', 'transformer.layers.1']
+        middle_kw = ['transformer.layers']
+    else:
+        classifier_kw, early_kw, middle_kw = 'classifier', [], []
+
     for name, param in model.named_parameters():
         if not param.requires_grad:
             continue
 
-        is_head = False
-        # Check top-level module name mainly
-        top_level = name.split('.')[0]
-        if any(k == top_level for k in head_keywords):
-            is_head = True
-        elif 'classifier' in name:  # Fallback
-            is_head = True
-
-        if is_head:
-            head_params.append(
-                {'params': [param], 'lr': config['head_lr'], 'name': f"head/{name}"})
+        if classifier_kw in name:
+            head.append(
+                {'params': [param], 'lr': config['head_lr'], 'name': name})
+        elif any(k in name for k in early_kw):
+            early.append(
+                {'params': [param], 'lr': config['backbone_lr'], 'name': name})
         else:
-            backbone_params_list.append((name, param))
 
-    # 2. Split Backbone into Early and Middle based on parameter index
-    n_backbone = len(backbone_params_list)
-    # First 40% is "early" (embedding/early convs)
-    split_idx = int(n_backbone * 0.4)
+            middle.append(
+                {'params': [param], 'lr': config['middle_lr'], 'name': name})
 
-    early_params = []
-    middle_params = []
+    param_groups = early + middle + head
 
-    for i, (name, param) in enumerate(backbone_params_list):
-        if i < split_idx:
-            early_params.append(
-                {'params': [param], 'lr': config['backbone_lr'], 'name': f"early/{name}"})
-        else:
-            middle_params.append(
-                {'params': [param], 'lr': config['middle_lr'], 'name': f"middle/{name}"})
+    if verbose:
+        print(f"\n{'='*70}")
+        print(f"{architecture.upper()} LAYER-WISE LR")
+        print(f"{'='*70}")
+        e_cnt = sum(sum(p.numel() for p in g['params']) for g in early)
+        m_cnt = sum(sum(p.numel() for p in g['params']) for g in middle)
+        h_cnt = sum(sum(p.numel() for p in g['params']) for g in head)
+        print(f"Early   (LR {config['backbone_lr']:.2e}): {e_cnt:>10,} params")
+        print(f"Middle  (LR {config['middle_lr']:.2e}): {m_cnt:>10,} params")
+        print(f"Head    (LR {config['head_lr']:.2e}): {h_cnt:>10,} params")
+        print(f"{'='*70}\n")
 
-    optimizer_params = head_params + middle_params + early_params
-
-    print(f"\nLayer-wise Learning Rates:")
-    print(f"{'='*70}")
-    print(
-        f"Early Layers  (LR {config['backbone_lr']:.2e}): {len(early_params)} params")
-    print(
-        f"Middle Layers (LR {config['middle_lr']:.2e}): {len(middle_params)} params")
-    print(
-        f"Head Layers   (LR {config['head_lr']:.2e}): {len(head_params)} params")
-    print(f"{'='*70}\n")
-
-    optimizer = optim.AdamW(
-        optimizer_params,
-        betas=config['betas'],
-        eps=config['eps'],
-        weight_decay=config['weight_decay']
-    )
-
-    return optimizer
+    return optim.AdamW(param_groups, betas=config['betas'], eps=config['eps'],
+                       weight_decay=config['weight_decay'])
 
 
-def get_cosine_schedule_with_warmup(optimizer, num_warmup_steps, num_training_steps, min_lr=1e-7):
-    """Cosine annealing with linear warmup"""
-    def lr_lambda(current_step):
-        if current_step < num_warmup_steps:
-            # Linear warmup
-            return float(current_step) / float(max(1, num_warmup_steps))
+# ============================================================================
+# Training Utilities
+# ============================================================================
 
-        # Cosine annealing
-        progress = (current_step - num_warmup_steps) / \
+def get_cosine_schedule(optimizer, num_warmup_steps, num_training_steps, min_lr=1e-7):
+    def lr_lambda(step):
+        if step < num_warmup_steps:
+            return float(step) / float(max(1, num_warmup_steps))
+        progress = (step - num_warmup_steps) / \
             max(1, num_training_steps - num_warmup_steps)
-        cosine_decay = 0.5 * (1.0 + np.cos(np.pi * progress))
-
-        # Scale to [min_lr, 1.0]
-        return max(min_lr, cosine_decay)
-
+        return max(min_lr, 0.5 * (1.0 + np.cos(np.pi * progress)))
     return optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
 
 
 class EarlyStopping:
-
-    def __init__(self, patience=7, min_delta=0.001, mode='max'):
+    def __init__(self, patience=7, min_delta=0.001):
         self.patience = patience
         self.min_delta = min_delta
-        self.mode = mode
         self.counter = 0
         self.best_score = None
-        self.early_stop = False
         self.best_epoch = 0
 
     def __call__(self, score, epoch):
@@ -268,208 +401,151 @@ class EarlyStopping:
             self.best_epoch = epoch
             return False
 
-        if self.mode == 'max':
-            improved = score > self.best_score + self.min_delta
-        else:
-            improved = score < self.best_score - self.min_delta
-
-        if improved:
+        if score > self.best_score + self.min_delta:
             self.best_score = score
             self.best_epoch = epoch
             self.counter = 0
         else:
             self.counter += 1
 
-        if self.counter >= self.patience:
-            self.early_stop = True
-
-        return self.early_stop
+        return self.counter >= self.patience
 
 
-def train_epoch(model, dataloader, criterion, optimizer, scheduler, config, epoch):
-    """Train for one epoch with modern techniques"""
+def train_epoch(model, loader, criterion, optimizer, scheduler, config, epoch):
     model.train()
+    total_loss, correct, total = 0, 0, 0
+    scaler = GradScaler() if config['use_amp'] else None
 
-    total_loss = 0
-    correct = 0
-    total = 0
-
-    scaler = GradScaler(
-    ) if config['use_amp'] and torch.cuda.is_available() else None
-
-    pbar = tqdm(
-        dataloader, desc=f"Epoch {epoch+1}/{config['num_epochs']} [Train]")
-
+    pbar = tqdm(loader, desc=f"Epoch {epoch+1}/{config['num_epochs']} [Train]")
     for batch_idx, (inputs, labels) in enumerate(pbar):
-        inputs = inputs.to(config['device']).float()
-        labels = labels.to(config['device']).long()
+        inputs, labels = inputs.to(config['device']).float(
+        ), labels.to(config['device']).long()
 
-        if scaler is not None:
+        if scaler:
             with autocast():
                 outputs = model(inputs)
                 loss = criterion(outputs, labels)
-
             scaler.scale(loss).backward()
-
-            # Gradient clipping
             if config['gradient_clip'] > 0:
                 scaler.unscale_(optimizer)
-                torch.nn.utils.clip_grad_norm_(
+                nn.utils.clip_grad_norm_(
                     model.parameters(), config['gradient_clip'])
-
             scaler.step(optimizer)
             scaler.update()
-            optimizer.zero_grad()
         else:
             outputs = model(inputs)
             loss = criterion(outputs, labels)
-
             loss.backward()
-
             if config['gradient_clip'] > 0:
-                torch.nn.utils.clip_grad_norm_(
+                nn.utils.clip_grad_norm_(
                     model.parameters(), config['gradient_clip'])
-
             optimizer.step()
-            optimizer.zero_grad()
 
-        # Update scheduler if step-based
-        if scheduler is not None and config['scheduler_step'] == 'batch':
+        optimizer.zero_grad()
+
+        if scheduler and config['scheduler_step'] == 'batch':
             scheduler.step()
 
         total_loss += loss.item()
-        _, predicted = outputs.max(1)
+        _, pred = outputs.max(1)
         total += labels.size(0)
-        correct += predicted.eq(labels).sum().item()
+        correct += pred.eq(labels).sum().item()
 
         if batch_idx % config['log_interval'] == 0:
-            current_lr = optimizer.param_groups[0]['lr']
             pbar.set_postfix({
                 'loss': f"{total_loss/(batch_idx+1):.4f}",
                 'acc': f"{100.*correct/total:.2f}%",
-                'lr': f"{current_lr:.2e}"
+                'lr': f"{optimizer.param_groups[0]['lr']:.2e}"
             })
 
-    metrics = {
-        'loss': total_loss / len(dataloader),
-        'accuracy': 100.0 * correct / total
-    }
-
-    return metrics
+    return {'loss': total_loss/len(loader), 'accuracy': 100.0*correct/total}
 
 
 @torch.no_grad()
-def evaluate(model, dataloader, criterion, config, desc="Validation"):
+def evaluate(model, loader, criterion, config, desc="Val"):
+    if len(loader) == 0:
+        return {'loss': 0, 'accuracy': 0, 'top3_accuracy': 0,
+                'top5_accuracy': 0, 'f1_macro': 0, 'f1_weighted': 0}, [], [], []
+
     model.eval()
-
     total_loss = 0
-    all_preds = []
-    all_labels = []
-    all_probs = []
+    all_preds, all_labels, all_probs = [], [], []
 
-    for inputs, labels in tqdm(dataloader, desc=desc, leave=False):
-        inputs = inputs.to(config['device']).float()
-        labels = labels.to(config['device']).long()
-
+    for inputs, labels in tqdm(loader, desc=desc, leave=False):
+        inputs, labels = inputs.to(config['device']).float(
+        ), labels.to(config['device']).long()
         outputs = model(inputs)
-        loss = criterion(outputs, labels)
-
-        total_loss += loss.item()
+        total_loss += criterion(outputs, labels).item()
 
         probs = F.softmax(outputs, dim=1)
-        _, predicted = outputs.max(1)
-
-        all_preds.extend(predicted.cpu().numpy())
+        all_preds.extend(outputs.max(1)[1].cpu().numpy())
         all_labels.extend(labels.cpu().numpy())
         all_probs.extend(probs.cpu().numpy())
 
-    all_preds = np.array(all_preds)
-    all_labels = np.array(all_labels)
-    all_probs = np.array(all_probs)
+    all_preds, all_labels, all_probs = np.array(
+        all_preds), np.array(all_labels), np.array(all_probs)
+    acc = 100.0 * accuracy_score(all_labels, all_preds)
 
-    accuracy = 100.0 * accuracy_score(all_labels, all_preds)
-
-    # Top-k accuracies
     try:
         n_classes = all_probs.shape[1]
-        top3_acc = 100.0 * \
+        top3 = 100.0 * \
             top_k_accuracy_score(all_labels, all_probs, k=min(
                 3, n_classes), labels=np.arange(n_classes))
-        top5_acc = 100.0 * \
+        top5 = 100.0 * \
             top_k_accuracy_score(all_labels, all_probs, k=min(
                 5, n_classes), labels=np.arange(n_classes))
-    except Exception as e:
-        top3_acc = top5_acc = accuracy
+    except:
+        top3 = top5 = acc
 
-    f1_macro = f1_score(all_labels, all_preds,
-                        average='macro', zero_division=0)
-    f1_weighted = f1_score(all_labels, all_preds,
-                           average='weighted', zero_division=0)
+    return {
+        'loss': total_loss/len(loader),
+        'accuracy': acc,
+        'top3_accuracy': top3,
+        'top5_accuracy': top5,
+        'f1_macro': f1_score(all_labels, all_preds, average='macro', zero_division=0),
+        'f1_weighted': f1_score(all_labels, all_preds, average='weighted', zero_division=0)
+    }, all_preds, all_labels, all_probs
 
-    metrics = {
-        'loss': total_loss / len(dataloader),
-        'accuracy': accuracy,
-        'top3_accuracy': top3_acc,
-        'top5_accuracy': top5_acc,
-        'f1_macro': f1_macro,
-        'f1_weighted': f1_weighted
-    }
 
-    return metrics, all_preds, all_labels, all_probs
-
+# ============================================================================
+# Main Finetuning Function
+# ============================================================================
 
 def finetune_deep_model(
-    data_path,
-    model_name,
-    pretrained_path,
-    model_parameters_file,
+    data_path, model_name, pretrained_path, model_parameters_file,
     output_dir='results/finetuned',
-    # Data args
-    split_per=0.7,
-    seed=42,
-    read_from_file=None,
-    batch_size=32,
-    # Finetuning args
-    use_lora=True,
-    lora_rank=16,
-    lora_alpha=32.0,
+    # Data
+    split_per=0.7, seed=42, read_from_file=None, batch_size=32,
+    # Finetuning strategy
+    use_lora=False, lora_rank=16, lora_alpha=32.0,
+    use_freezing=True, freeze_ratio=0.3,
+    use_progressive_unfreeze=False, unfreeze_every=5,
     use_layer_wise_lr=True,
-    backbone_lr=1e-5,
-    middle_lr=5e-5,
-    head_lr=1e-3,
-    # Training args
-    num_epochs=30,
-    warmup_epochs=2,
-    weight_decay=0.01,
-    gradient_clip=1.0,
-    # SWA args
-    use_swa=True,
-    swa_start=20,
-    swa_lr=5e-6,
-    # Other args
-    early_stopping_patience=7,
-    eval_model=True
+    backbone_lr=1e-5, middle_lr=5e-5, head_lr=5e-4,
+    # Training
+    num_epochs=30, warmup_epochs=3,
+    weight_decay=0.05, gradient_clip=0.5,
+    label_smoothing=0.1,
+    # SWA
+    use_swa=False, swa_start=20, swa_lr=5e-6,
+    # Other
+    early_stopping_patience=10, eval_model=True
 ):
 
     print("\n" + "="*80)
-    print("MSAD MODEL FINETUNING - Modern Techniques")
+    print("UNIVERSAL MSAD MODEL FINETUNING")
     print("="*80)
 
     if not MSAD_AVAILABLE:
-        raise ImportError(
-            "MSAD utilities not found. Cannot proceed without data loading logic.")
+        raise ImportError("MSAD utilities not found")
 
     # Setup
-
     window_size = int(re.search(r'\d+', str(data_path)).group())
-    print(f"\nWindow size: {window_size}")
-
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-    print(f"Device: {device}")
+    print(f"\nWindow: {window_size} | Device: {device}")
     if torch.cuda.is_available():
         print(f"GPU: {torch.cuda.get_device_name(0)}")
 
-    os.makedirs(output_dir, exist_ok=True)
     os.makedirs(f"{output_dir}/weights", exist_ok=True)
     os.makedirs(f"{output_dir}/logs", exist_ok=True)
     os.makedirs(f"{output_dir}/plots", exist_ok=True)
@@ -477,124 +553,87 @@ def finetune_deep_model(
     timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
     run_name = f"{model_name}_{window_size}_{timestamp}"
 
+    # Data loading
     print(f"\n{'='*80}")
     print("DATA LOADING")
     print(f"{'='*80}")
 
     train_set, val_set, test_set = create_splits(
-        data_path,
-        split_per=split_per,
-        seed=seed,
-        read_from_file=read_from_file,
-    )
-
+        data_path, split_per, seed, read_from_file)
     training_data = TimeseriesDataset(data_path, fnames=train_set)
     val_data = TimeseriesDataset(data_path, fnames=val_set)
     test_data = TimeseriesDataset(data_path, fnames=test_set)
 
-    print(f"Train samples: {len(training_data)}")
-    print(f"Val samples: {len(val_data)}")
-    print(f"Test samples: {len(test_data)}")
+    print(
+        f"Train: {len(training_data)} | Val: {len(val_data)} | Test: {len(test_data)}")
 
     class_weights = training_data.get_weights_subset(device)
     num_classes = len(class_weights)
 
     train_loader = DataLoader(
-        training_data,
-        batch_size=batch_size,
-        shuffle=True,
-        num_workers=4,
-        pin_memory=True
-    )
-    val_loader = DataLoader(
-        val_data,
-        batch_size=batch_size,
-        shuffle=False,
-        num_workers=4,
-        pin_memory=True
-    )
+        training_data, batch_size=batch_size, shuffle=True, num_workers=4, pin_memory=True)
+    val_loader = DataLoader(val_data, batch_size=batch_size,
+                            shuffle=False, num_workers=4, pin_memory=True)
     test_loader = DataLoader(
-        test_data,
-        batch_size=batch_size,
-        shuffle=False,
-        num_workers=4,
-        pin_memory=True
-    )
+        test_data, batch_size=batch_size, shuffle=False, num_workers=4, pin_memory=True)
 
+    # Model setup
     print(f"\n{'='*80}")
     print("MODEL SETUP")
     print(f"{'='*80}")
 
     model_parameters = json_file(model_parameters_file)
-
-    # Adjust for window size - for SignalTransformer (sit.py)
     if 'original_length' in model_parameters:
         model_parameters['original_length'] = window_size
     if 'timeseries_size' in model_parameters:
         model_parameters['timeseries_size'] = window_size
-
-    # Adjust number of classes
     if 'num_classes' in model_parameters:
         model_parameters['num_classes'] = num_classes
 
-    try:
-        model = deep_models[model_name.lower()](**model_parameters)
-    except KeyError:
-        raise ValueError(
-            f"Model '{model_name}' not found in deep_models registry.")
+    model = deep_models[model_name.lower()](**model_parameters).to(device)
 
-    model = model.to(device)
-
-    # Load pretrained weights
+    # Load pretrained
     if pretrained_path and os.path.exists(pretrained_path):
-        print(f"\nLoading pretrained weights from: {pretrained_path}")
+        print(f"\nLoading pretrained: {pretrained_path}")
         try:
-            checkpoint = torch.load(pretrained_path, map_location=device)
-
-            if isinstance(checkpoint, dict):
-                if 'model_state_dict' in checkpoint:
-                    state_dict = checkpoint['model_state_dict']
-                elif 'state_dict' in checkpoint:
-                    state_dict = checkpoint['state_dict']
-                elif 'model' in checkpoint:
-                    state_dict = checkpoint['model']
-                else:
-                    state_dict = checkpoint
+            ckpt = torch.load(pretrained_path, map_location=device)
+            if isinstance(ckpt, dict):
+                state_dict = ckpt.get('model_state_dict') or ckpt.get(
+                    'state_dict') or ckpt.get('model') or ckpt
             else:
-                state_dict = checkpoint
-
-            model.load_state_dict(state_dict, strict=False)
-            print("✓ Pretrained weights loaded successfully")
-
+                state_dict = ckpt
+            model.load_state_dict(state_dict, strict=True)
+            print("✓ Pretrained weights loaded")
         except Exception as e:
-            print(f"⚠ Could not load pretrained weights: {e}")
-            print("  Training from scratch...")
-    else:
-        print(f"\nNo pretrained weights found at: {pretrained_path}")
-        print("Training from scratch...")
+            print(f"⚠ Could not load weights: {e}")
 
-    # Apply LoRA
+    # Detect architecture
+    architecture = detect_architecture(model)
+    print(f"\nDetected architecture: {architecture.upper()}")
 
-    if use_lora:
+    # Apply finetuning strategy
+    if use_lora and architecture == 'transformer':
         print(f"\n{'='*80}")
-        print("APPLYING LoRA (Low-Rank Adaptation)")
+        print("APPLYING LoRA")
         print(f"{'='*80}")
-        print(f"Rank: {lora_rank}, Alpha: {lora_alpha}")
-
         model, lora_layers = apply_lora_to_model(
-            model,
-            rank=lora_rank,
-            alpha=lora_alpha,
-            verbose=True
-        )
+            model, lora_rank, lora_alpha, verbose=True)
+    elif use_freezing:
+        model = freeze_layers(model, architecture, freeze_ratio, verbose=True)
 
-    # Setup Training
+    # Progressive unfreezing schedule
+    unfreeze_schedule = None
+    if use_progressive_unfreeze:
+        unfreeze_schedule = get_unfreeze_schedule(
+            model, architecture, num_epochs, unfreeze_every)
+        print(
+            f"\nProgressive unfreezing enabled (every {unfreeze_every} epochs)")
 
+    # Training config
     print(f"\n{'='*80}")
     print("TRAINING CONFIGURATION")
     print(f"{'='*80}")
 
-    # Configuration dictionary
     config = {
         'device': device,
         'num_epochs': num_epochs,
@@ -608,103 +647,93 @@ def finetune_deep_model(
         'gradient_clip': gradient_clip,
         'use_amp': torch.cuda.is_available(),
         'log_interval': 10,
-        'scheduler_step': 'epoch'  # or 'batch'
+        'scheduler_step': 'batch'
     }
 
-    print(f"Epochs: {num_epochs}")
-    print(f"Batch size: {batch_size}")
+    print(f"Epochs: {num_epochs} | Batch: {batch_size}")
     print(
-        f"Learning rates - Backbone: {backbone_lr:.2e}, Middle: {middle_lr:.2e}, Head: {head_lr:.2e}")
-    print(f"Weight decay: {weight_decay}")
-    print(f"Gradient clip: {gradient_clip}")
-    print(f"Mixed precision: {config['use_amp']}")
+        f"LR - Backbone: {backbone_lr:.2e}, Middle: {middle_lr:.2e}, Head: {head_lr:.2e}")
+    print(f"Weight decay: {weight_decay} | Grad clip: {gradient_clip}")
+    print(f"Label smoothing: {label_smoothing}")
 
-    # Loss function with class weights
-    criterion = nn.CrossEntropyLoss(weight=class_weights.to(device))
+    # Loss with label smoothing
+    criterion = nn.CrossEntropyLoss(weight=class_weights.to(
+        device), label_smoothing=label_smoothing)
 
-    # Optimizer with layer-wise learning rates
+    # Optimizer
     if use_layer_wise_lr:
-        optimizer = get_layer_wise_optimizer(model, config)
+        optimizer = get_layerwise_optimizer(
+            model, architecture, config, verbose=True)
     else:
         optimizer = optim.AdamW(
             filter(lambda p: p.requires_grad, model.parameters()),
-            lr=head_lr,
-            betas=config['betas'],
-            eps=config['eps'],
-            weight_decay=weight_decay
+            lr=head_lr, betas=config['betas'], eps=config['eps'], weight_decay=weight_decay
         )
-        print(f"\nUsing single LR: {head_lr:.2e}")
+        print(f"\nSingle LR: {head_lr:.2e}")
 
-    # Learning rate scheduler
+    # Scheduler
     steps_per_epoch = len(train_loader)
     total_steps = num_epochs * steps_per_epoch
     warmup_steps = warmup_epochs * steps_per_epoch
-
-    scheduler = get_cosine_schedule_with_warmup(
-        optimizer,
-        num_warmup_steps=warmup_steps,
-        num_training_steps=total_steps,
-        min_lr=1e-7
-    )
+    scheduler = get_cosine_schedule(optimizer, warmup_steps, total_steps)
 
     # Early stopping
-    early_stopping = EarlyStopping(
-        patience=early_stopping_patience,
-        min_delta=0.001,
-        mode='max'
-    )
+    early_stopping = EarlyStopping(patience=early_stopping_patience)
 
-    # Stochastic Weight Averaging
-    swa_model = None
-    swa_scheduler = None
+    # SWA
+    swa_model = swa_scheduler = None
     if use_swa and swa_start < num_epochs:
         swa_model = AveragedModel(model)
         swa_scheduler = SWALR(optimizer, swa_lr=swa_lr)
-        print(f"\nSWA enabled: starts at epoch {swa_start}, LR={swa_lr:.2e}")
+        print(f"\nSWA enabled: starts epoch {swa_start}, LR={swa_lr:.2e}")
 
-    # Training Loop
-
+    # Training loop
     print(f"\n{'='*80}")
     print("TRAINING")
     print(f"{'='*80}\n")
 
     history = {
-        'train_loss': [],
-        'train_acc': [],
-        'val_loss': [],
-        'val_acc': [],
-        'val_top3_acc': [],
-        'val_top5_acc': [],
-        'val_f1_macro': [],
-        'learning_rates': []
+        'train_loss': [], 'train_acc': [], 'val_loss': [], 'val_acc': [],
+        'val_top3_acc': [], 'val_top5_acc': [], 'val_f1_macro': [], 'learning_rates': []
     }
 
     best_val_acc = 0
     best_model_state = None
 
     for epoch in range(num_epochs):
+        # Progressive unfreezing
+        if unfreeze_schedule:
+            apply_unfreeze(model, architecture, unfreeze_schedule[epoch])
+            # Recreate optimizer with new trainable params
+            if use_layer_wise_lr:
+                optimizer = get_layerwise_optimizer(
+                    model, architecture, config, verbose=False)
+            else:
+                optimizer = optim.AdamW(
+                    filter(lambda p: p.requires_grad, model.parameters()),
+                    lr=head_lr, weight_decay=weight_decay
+                )
+            scheduler = get_cosine_schedule(
+                optimizer, warmup_steps, total_steps)
+
         # Train
-        train_metrics = train_epoch(
-            model, train_loader, criterion, optimizer,
-            scheduler if config['scheduler_step'] == 'batch' else None,
-            config, epoch
-        )
+        train_metrics = train_epoch(model, train_loader, criterion, optimizer,
+                                    scheduler if config['scheduler_step'] == 'batch' else None, config, epoch)
 
         # Validate
         val_metrics, _, _, _ = evaluate(
-            model, val_loader, criterion, config, desc=f"Epoch {epoch+1} [Val]"
-        )
+            model, val_loader, criterion, config, f"Epoch {epoch+1} [Val]")
 
         # Update scheduler (epoch-based)
-        if scheduler is not None and config['scheduler_step'] == 'epoch':
+        if scheduler and config['scheduler_step'] == 'epoch':
             scheduler.step()
 
-        # SWA update
+        # SWA
         if use_swa and epoch >= swa_start:
             swa_model.update_parameters(model)
             swa_scheduler.step()
 
-        # Record history
+        # Record
         history['train_loss'].append(train_metrics['loss'])
         history['train_acc'].append(train_metrics['accuracy'])
         history['val_loss'].append(val_metrics['loss'])
@@ -714,124 +743,102 @@ def finetune_deep_model(
         history['val_f1_macro'].append(val_metrics['f1_macro'])
         history['learning_rates'].append(optimizer.param_groups[0]['lr'])
 
-        print(f"\nEpoch {epoch+1}/{num_epochs} Summary:")
+        print(f"\nEpoch {epoch+1}/{num_epochs}:")
         print(
             f"  Train - Loss: {train_metrics['loss']:.4f}, Acc: {train_metrics['accuracy']:.2f}%")
         print(f"  Val   - Loss: {val_metrics['loss']:.4f}, Acc: {val_metrics['accuracy']:.2f}%, "
               f"Top-3: {val_metrics['top3_accuracy']:.2f}%, Top-5: {val_metrics['top5_accuracy']:.2f}%")
 
+        # Save best
         if val_metrics['accuracy'] > best_val_acc:
             best_val_acc = val_metrics['accuracy']
             best_model_state = copy.deepcopy(model.state_dict())
-
-            checkpoint_path = f"{output_dir}/weights/{run_name}_best.pth"
             torch.save({
-                'epoch': epoch,
-                'model_state_dict': model.state_dict(),
+                'epoch': epoch, 'model_state_dict': model.state_dict(),
                 'optimizer_state_dict': optimizer.state_dict(),
-                'val_accuracy': val_metrics['accuracy'],
-                'val_top3_accuracy': val_metrics['top3_accuracy'],
-                'val_top5_accuracy': val_metrics['top5_accuracy'],
-                'config': config,
-            }, checkpoint_path)
+                'val_accuracy': val_metrics['accuracy'], 'config': config,
+            }, f"{output_dir}/weights/{run_name}_best.pth")
+            print(f"  ✓ Best model saved (Val Acc: {best_val_acc:.2f}%)")
 
-            print(f"  ✓ New best model saved (Val Acc: {best_val_acc:.2f}%)")
-
+        # Early stopping
         if early_stopping(val_metrics['accuracy'], epoch):
-            print(f"\n⚠ Early stopping triggered at epoch {epoch+1}")
+            print(f"\n⚠ Early stopping at epoch {epoch+1}")
             print(
-                f"  Best validation accuracy: {early_stopping.best_score:.2f}% at epoch {early_stopping.best_epoch+1}")
+                f"  Best: {early_stopping.best_score:.2f}% at epoch {early_stopping.best_epoch+1}")
             break
 
-    # Final Evaluation
-
     # Load best model
-    if best_model_state is not None:
+    if best_model_state:
         model.load_state_dict(best_model_state)
 
-    # Update BN statistics with SWA if used
-    if use_swa and swa_model is not None:
-        print("\nUpdating SWA model batch norm statistics...")
+    # SWA finalization
+    if use_swa and swa_model:
+        print("\nUpdating SWA batch norm...")
         torch.optim.swa_utils.update_bn(train_loader, swa_model, device=device)
         model = swa_model
 
+    # Final evaluation
     print(f"\n{'='*80}")
     print("FINAL EVALUATION")
     print(f"{'='*80}\n")
 
-    # Test set evaluation
-    if eval_model:
-        test_metrics, test_preds, test_labels, test_probs = evaluate(
-            model, test_loader, criterion, config, desc="Test Set"
-        )
-
+    if eval_model and len(test_loader) > 0:
+        test_metrics, test_preds, test_labels, _ = evaluate(
+            model, test_loader, criterion, config, "Test")
         print(f"Test Results:")
         print(f"  Accuracy: {test_metrics['accuracy']:.2f}%")
-        print(f"  Top-3 Accuracy: {test_metrics['top3_accuracy']:.2f}%")
-        print(f"  Top-5 Accuracy: {test_metrics['top5_accuracy']:.2f}%")
-        print(f"  F1-Macro: {test_metrics['f1_macro']:.4f}")
-        print(f"  F1-Weighted: {test_metrics['f1_weighted']:.4f}")
+        print(
+            f"  Top-3: {test_metrics['top3_accuracy']:.2f}%, Top-5: {test_metrics['top5_accuracy']:.2f}%")
+        print(
+            f"  F1-Macro: {test_metrics['f1_macro']:.4f}, F1-Weighted: {test_metrics['f1_weighted']:.4f}")
 
-        # Save test metrics
-        test_results = {
-            'model': model_name,
-            'window_size': window_size,
-            'timestamp': timestamp,
-            **test_metrics
-        }
-
-        results_df = pd.DataFrame([test_results])
-        results_df.to_csv(
+        # Save results
+        pd.DataFrame([test_metrics]).to_csv(
             f"{output_dir}/logs/{run_name}_test_results.csv", index=False)
 
         # Confusion matrix
-        cm = confusion_matrix(test_labels, test_preds)
-        plt.figure(figsize=(10, 8))
-        sns.heatmap(cm, annot=False, fmt='d', cmap='Blues')
-        plt.title('Test Set Confusion Matrix')
-        plt.xlabel('Predicted')
-        plt.ylabel('True')
-        plt.savefig(
-            f"{output_dir}/plots/{run_name}_confusion_matrix.png", dpi=150)
-        plt.close()
+        if len(test_labels) > 0:
+            cm = confusion_matrix(test_labels, test_preds)
+            plt.figure(figsize=(10, 8))
+            sns.heatmap(cm, annot=False, fmt='d', cmap='Blues')
+            plt.title('Test Confusion Matrix')
+            plt.xlabel('Predicted')
+            plt.ylabel('True')
+            plt.savefig(
+                f"{output_dir}/plots/{run_name}_confusion_matrix.png", dpi=150)
+            plt.close()
+    else:
+        print("⚠ Test set empty, skipping evaluation")
 
-    # Save Training History
-
-    history_df = pd.DataFrame(history)
-    history_df.to_csv(f"{output_dir}/logs/{run_name}_history.csv", index=False)
+    # Save history
+    pd.DataFrame(history).to_csv(
+        f"{output_dir}/logs/{run_name}_history.csv", index=False)
 
     # Plot training curves
     fig, axes = plt.subplots(2, 2, figsize=(15, 10))
 
-    # Loss
     axes[0, 0].plot(history['train_loss'], label='Train')
-    axes[0, 0].plot(history['val_loss'], label='Validation')
+    axes[0, 0].plot(history['val_loss'], label='Val')
     axes[0, 0].set_title('Loss')
     axes[0, 0].set_xlabel('Epoch')
-    axes[0, 0].set_ylabel('Loss')
     axes[0, 0].legend()
     axes[0, 0].grid(True)
 
-    # Accuracy
     axes[0, 1].plot(history['train_acc'], label='Train')
     axes[0, 1].plot(history['val_acc'], label='Val Top-1')
     axes[0, 1].plot(history['val_top3_acc'], label='Val Top-3', linestyle='--')
     axes[0, 1].plot(history['val_top5_acc'], label='Val Top-5', linestyle=':')
     axes[0, 1].set_title('Accuracy')
     axes[0, 1].set_xlabel('Epoch')
-    axes[0, 1].set_ylabel('Accuracy (%)')
     axes[0, 1].legend()
     axes[0, 1].grid(True)
 
-    # Learning rate
     axes[1, 0].plot(history['learning_rates'])
-    axes[1, 0].set_title('Learning Rate Schedule')
+    axes[1, 0].set_title('Learning Rate')
     axes[1, 0].set_xlabel('Epoch')
-    axes[1, 0].set_ylabel('Learning Rate')
     axes[1, 0].set_yscale('log')
     axes[1, 0].grid(True)
 
-    # Empty 4th plot (CM is saved separately now)
     axes[1, 1].axis('off')
 
     plt.tight_layout()
@@ -840,122 +847,86 @@ def finetune_deep_model(
 
     print(f"\n{'='*80}")
     print(f"✓ Finetuning complete!")
-    print(f"  Run name: {run_name}")
+    print(f"  Run: {run_name}")
     print(f"  Best model: {output_dir}/weights/{run_name}_best.pth")
-    print(f"  Logs: {output_dir}/logs/")
-    print(f"  Plots: {output_dir}/plots/")
     print(f"{'='*80}\n")
 
     return model, history
 
 
-# Command Line Interface
-
+# ============================================================================
+# CLI
+# ============================================================================
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(
-        prog='finetune_deep_model',
-        description='Finetune MSAD models with modern techniques (LoRA, layer-wise LR, etc.)',
-        formatter_class=argparse.ArgumentDefaultsHelpFormatter
-    )
+    parser = argparse.ArgumentParser(description='Universal MSAD Finetuning')
 
-    # Required arguments
-    parser.add_argument('-p', '--path', type=str, required=True,
-                        help='Path to dataset (must contain window size as number)')
-    parser.add_argument('-m', '--model', type=str, required=True,
-                        help='Model name (e.g., cnn, resnet, transformer)')
-    parser.add_argument('-w', '--weights', type=str, required=True,
-                        help='Path to pretrained weights (.pth file)')
-    parser.add_argument('-pa', '--params', type=str, required=True,
-                        help='JSON file with model parameters')
+    # Required
+    parser.add_argument('-p', '--path', required=True, help='Dataset path')
+    parser.add_argument('-m', '--model', required=True, help='Model name')
+    parser.add_argument('-w', '--weights', required=True,
+                        help='Pretrained weights')
+    parser.add_argument('-pa', '--params', required=True,
+                        help='Model params JSON')
 
-    # Data arguments
-    parser.add_argument('-s', '--split', type=float, default=0.7,
-                        help='Train split percentage')
-    parser.add_argument('-se', '--seed', type=int, default=42,
-                        help='Random seed')
-    parser.add_argument('-f', '--file', type=str, default=None,
-                        help='File with predefined splits')
-    # REMOVED: --dummy-labels (No longer supported)
+    # Data
+    parser.add_argument('-s', '--split', type=float, default=0.7)
+    parser.add_argument('-se', '--seed', type=int, default=42)
+    parser.add_argument('-f', '--file', default=None)
+    parser.add_argument('-b', '--batch', type=int, default=32)
 
-    # Finetuning arguments
-    parser.add_argument('--use-lora', action='store_true', default=False,
-                        help='Apply LoRA for parameter-efficient finetuning')
-    parser.add_argument('--lora-rank', type=int, default=16,
-                        help='LoRA rank (higher = more expressive)')
-    parser.add_argument('--lora-alpha', type=float, default=32.0,
-                        help='LoRA alpha scaling factor')
+    # Finetuning strategy
+    parser.add_argument('--use-lora', action='store_true',
+                        help='LoRA (for Transformers)')
+    parser.add_argument('--lora-rank', type=int, default=16)
+    parser.add_argument('--lora-alpha', type=float, default=32.0)
+    parser.add_argument('--use-freezing', action='store_true',
+                        default=True, help='Freeze early layers')
+    parser.add_argument('--freeze-ratio', type=float,
+                        default=0.3, help='Fraction to freeze (0-1)')
+    parser.add_argument('--progressive-unfreeze',
+                        action='store_true', help='Progressive unfreezing')
+    parser.add_argument('--unfreeze-every', type=int, default=5)
+    parser.add_argument('--layer-wise-lr', action='store_true',
+                        default=True, help='Layer-wise LR')
+    parser.add_argument('--backbone-lr', type=float, default=1e-5)
+    parser.add_argument('--middle-lr', type=float, default=5e-5)
+    parser.add_argument('--head-lr', type=float, default=5e-4)
 
-    parser.add_argument('--layer-wise-lr', action='store_true', default=False,
-                        help='Use discriminative learning rates')
-    parser.add_argument('--backbone-lr', type=float, default=1e-5,
-                        help='Learning rate for early layers')
-    parser.add_argument('--middle-lr', type=float, default=5e-5,
-                        help='Learning rate for middle layers')
-    parser.add_argument('--head-lr', type=float, default=1e-3,
-                        help='Learning rate for classifier head')
-
-    # Training arguments
-    parser.add_argument('-b', '--batch', type=int, default=32,
-                        help='Batch size')
-    parser.add_argument('-ep', '--epochs', type=int, default=30,
-                        help='Number of epochs')
-    parser.add_argument('--warmup-epochs', type=int, default=2,
-                        help='Warmup epochs')
-    parser.add_argument('--weight-decay', type=float, default=0.01,
-                        help='Weight decay (L2 regularization)')
-    parser.add_argument('--gradient-clip', type=float, default=1.0,
-                        help='Gradient clipping value')
+    # Training
+    parser.add_argument('-ep', '--epochs', type=int, default=30)
+    parser.add_argument('--warmup-epochs', type=int, default=3)
+    parser.add_argument('--weight-decay', type=float, default=0.05)
+    parser.add_argument('--gradient-clip', type=float, default=0.5)
+    parser.add_argument('--label-smoothing', type=float, default=0.1)
 
     # SWA
-    parser.add_argument('--use-swa', action='store_true', default=False,
-                        help='Use Stochastic Weight Averaging')
-    parser.add_argument('--swa-start', type=int, default=20,
-                        help='Epoch to start SWA')
-    parser.add_argument('--swa-lr', type=float, default=5e-6,
-                        help='SWA learning rate')
+    parser.add_argument('--use-swa', action='store_true')
+    parser.add_argument('--swa-start', type=int, default=20)
+    parser.add_argument('--swa-lr', type=float, default=5e-6)
 
     # Other
-    parser.add_argument('--early-stopping', type=int, default=7,
-                        help='Early stopping patience')
-    parser.add_argument('-o', '--output', type=str, default='results/finetuned',
-                        help='Output directory')
-    parser.add_argument('-e', '--eval-true', action='store_true',
-                        help='Evaluate on test set')
+    parser.add_argument('--early-stopping', type=int, default=10)
+    parser.add_argument('-o', '--output', default='results/finetuned')
+    parser.add_argument('-e', '--eval-true', action='store_true')
 
     args = parser.parse_args()
 
-    # Run finetuning
     finetune_deep_model(
-        data_path=args.path,
-        model_name=args.model,
-        pretrained_path=args.weights,
-        model_parameters_file=args.params,
+        data_path=args.path, model_name=args.model,
+        pretrained_path=args.weights, model_parameters_file=args.params,
         output_dir=args.output,
-        # Data
-        split_per=args.split,
-        seed=args.seed,
-        read_from_file=args.file,
+        split_per=args.split, seed=args.seed, read_from_file=args.file,
         batch_size=args.batch,
-        # LoRA
-        use_lora=args.use_lora,
-        lora_rank=args.lora_rank,
-        lora_alpha=args.lora_alpha,
-        # Layer-wise LR
+        use_lora=args.use_lora, lora_rank=args.lora_rank, lora_alpha=args.lora_alpha,
+        use_freezing=args.use_freezing, freeze_ratio=args.freeze_ratio,
+        use_progressive_unfreeze=args.progressive_unfreeze,
+        unfreeze_every=args.unfreeze_every,
         use_layer_wise_lr=args.layer_wise_lr,
-        backbone_lr=args.backbone_lr,
-        middle_lr=args.middle_lr,
-        head_lr=args.head_lr,
-        # Training
-        num_epochs=args.epochs,
-        warmup_epochs=args.warmup_epochs,
-        weight_decay=args.weight_decay,
-        gradient_clip=args.gradient_clip,
-        # SWA
-        use_swa=args.use_swa,
-        swa_start=args.swa_start,
-        swa_lr=args.swa_lr,
-        # Other
-        early_stopping_patience=args.early_stopping,
-        eval_model=args.eval_true
+        backbone_lr=args.backbone_lr, middle_lr=args.middle_lr, head_lr=args.head_lr,
+        num_epochs=args.epochs, warmup_epochs=args.warmup_epochs,
+        weight_decay=args.weight_decay, gradient_clip=args.gradient_clip,
+        label_smoothing=args.label_smoothing,
+        use_swa=args.use_swa, swa_start=args.swa_start, swa_lr=args.swa_lr,
+        early_stopping_patience=args.early_stopping, eval_model=args.eval_true
     )
