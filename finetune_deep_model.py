@@ -514,6 +514,7 @@ def evaluate(model, loader, criterion, config, desc="Val"):
 def finetune_deep_model(
     data_path, model_name, pretrained_path, model_parameters_file,
     output_dir='results/finetuned',
+    window_size=None,
     # Data
     split_per=0.7, seed=42, read_from_file=None, batch_size=32,
     # Finetuning strategy
@@ -540,7 +541,8 @@ def finetune_deep_model(
         raise ImportError("MSAD utilities not found")
 
     # Setup
-    window_size = int(re.search(r'\d+', str(data_path)).group())
+    if window_size is None:
+        raise ValueError("window_size must be provided explicitly.")
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
     print(f"\nWindow: {window_size} | Device: {device}")
     if torch.cuda.is_available():
@@ -874,6 +876,8 @@ if __name__ == "__main__":
     parser.add_argument('-se', '--seed', type=int, default=42)
     parser.add_argument('-f', '--file', default=None)
     parser.add_argument('-b', '--batch', type=int, default=32)
+    parser.add_argument('-ws', '--window-size', type=int, required=True,
+                        help='Length of the time series window (e.g. 128, 256)')
 
     # Finetuning strategy
     parser.add_argument('--use-lora', action='store_true',
@@ -916,6 +920,7 @@ if __name__ == "__main__":
         data_path=args.path, model_name=args.model,
         pretrained_path=args.weights, model_parameters_file=args.params,
         output_dir=args.output,
+        window_size=args.window_size,
         split_per=args.split, seed=args.seed, read_from_file=args.file,
         batch_size=args.batch,
         use_lora=args.use_lora, lora_rank=args.lora_rank, lora_alpha=args.lora_alpha,
