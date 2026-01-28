@@ -1,0 +1,52 @@
+# --- Core Numeric Stack ---
+numpy==1.24.4
+pandas==2.0.3
+scipy==1.15.3          # Added (Critical missing dependency)
+numba==0.58.1
+
+# --- Machine Learning ---
+scikit-learn==1.2.2
+sktime==0.19.2
+joblib==1.5.3          # Added (Commonly used directly or by sklearn)
+threadpoolctl==3.6.0   # Added (Required for sklearn/numpy parallelism)
+
+# --- Deep Learning (Torch & Utils) ---
+torch==2.0.1
+tensorboard==2.20.0    # Added (Visualization for DL)
+triton==2.0.0          # Added (OpenAI/Torch dependency)
+pure-eval==0.2.3       # Added
+
+# --- NVIDIA CUDA Stack (Explicitly installed in your env) ---
+# Your torch install is relying on these specific CUDA 11 versions
+nvidia-cublas-cu11==11.10.3.66
+nvidia-cuda-cupti-cu11==11.7.101
+nvidia-cuda-nvrtc-cu11==11.7.99
+nvidia-cuda-runtime-cu11==11.7.99
+nvidia-cudnn-cu11==8.5.0.96
+nvidia-cufft-cu11==10.9.0.58
+nvidia-curand-cu11==10.2.10.91
+nvidia-cusolver-cu11==11.4.0.1
+nvidia-cusparse-cu11==11.7.4.91
+nvidia-nccl-cu11==2.14.3
+nvidia-nvtx-cu11==11.7.91
+
+# --- Plotting & Visualization ---
+matplotlib==3.8.4
+seaborn==0.13.2        # Added (High-level plotting)
+pillow==12.1.0         # Added (Image processing)
+
+# --- Utilities & Data Structures ---
+ipdb                   # Added (Interactive Debugger - Required by codebase)
+tqdm==4.67.1
+natsort==8.4.0
+networkx==3.4.2        # Added (Graph algorithms)
+typing-extensions==4.15.0
+packaging==25.0
+protobuf==6.33.4       # Added (Data serialization)
+python-dateutil==2.9.0.post0
+pytz==2025.2
+
+# --- Web/Template Utils (Present in your list) ---
+jinja2==3.1.6
+markupsafe==3.0.3
+werkzeug==3.1.5
