@@ -66,7 +66,7 @@ class DataLoader:
             
             data_file_extension = '*.out'
             
-            if "ESA-Mission1-semi-supervised" in dataset:
+            if "ESA-Mission1-semi-supervised" in dataset or "ESA-Mission2-semi-supervised" in dataset:
                 data_file_extension = '*.csv'
                 
             for fname in glob.glob(os.path.join(self.data_path, name, data_file_extension)):
