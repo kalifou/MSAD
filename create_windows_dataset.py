@@ -88,7 +88,7 @@ def create_tmp_dataset(
     #ipdb.set_trace(context=35)
     # Keep only the metrics of the detectors (remove oracles)
     metrics_data = metrics_data[detector_names]
-   
+    
     ts_list, labels = split_and_compute_labels(x, metrics_data, window_size)
     # Uncomment to check the results
     # fig, axs = plt.subplots(2, 1, sharex=True)
@@ -132,8 +132,7 @@ def split_and_compute_labels(x, metrics_data, window_size):
 
     assert(
         len(x) == metrics_data.shape[0]
-    ), "Lengths and shapes do not match. Please check"
-
+    ), "Lengths and shapes do not match. Please check"    
     for ts, metric_label in tqdm(zip(x, metrics_data.idxmax(axis=1)), total=len(x), desc="Create dataset"):
         
         # Z-normalization (windows with a single value go to 0)
@@ -221,7 +220,7 @@ if __name__ == "__main__":
     if args.name == "ESA_ADB":
         assert channel_list !=list()
         for ch_i in channel_list:
-            assert ch_i >=1 and ch_i <= 76
+            assert ch_i >=1 #and ch_i <= 76
     else:
         assert channel_list == list()
     

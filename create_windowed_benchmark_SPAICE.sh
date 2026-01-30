@@ -1,6 +1,7 @@
 
 source_binarized_data="../anomaly_detection_galileo/preprocessed/multivariate/"
 destination_dataset_dir_msad="data/ESA-ADB/binarized/multivariate/"
+destination_windowed_data="data/ESA-ADB/binarized/windowed/" #m2/train_all_targets"
 
 #"/tmp/di38jul/test_transfer/"
 #"data/ESA-ADB/binarized/multivariate/"
@@ -13,17 +14,22 @@ ms2_file_prefix="21_months."
 # adjust channels of interest
 # create directory of interest
 
-for current_dataset in "ESA-Mission1-semi-supervised"; do # "ESA-Mission1-semi-supervised"; do
+source activate base
+conda activate MSAD_ESA
+
+for current_dataset in "ESA-Mission2-semi-supervised"; do # "ESA-Mission1-semi-supervised"; do
     if [[ $current_dataset = "ESA-Mission1-semi-supervised" ]]
     then
       echo "Processing dataset 1."
       current_prefix=$ms1_file_prefix
       list_channels=$(seq -s, 12 14) #$(seq -s, 12 52)$','$(seq -s, 57 66)$','$(seq -s, 70 76)
+      mini_dataset_id="/m1/"
     elif [[ $current_dataset = "ESA-Mission2-semi-supervised" ]]
     then
       echo "Processing Dataset 2."
       current_prefix=$ms2_file_prefix
-      list_channels=$(seq -s, 9 11) #$(seq -s, 9 28)$','$(seq -s, 58 59)$','$(seq -s, 70 91)$','$(seq -s, 97 99)
+      list_channels=$(seq -s, 9 28)$','$(seq -s, 58 59)$','$(seq -s, 70 91)$','$(seq -s, 97 99) #$(seq -s, 9 11) #
+      mini_dataset_id="/m2/"
     fi
     
     for split in "train"; do #"test"; do
@@ -44,9 +50,14 @@ for current_dataset in "ESA-Mission1-semi-supervised"; do # "ESA-Mission1-semi-s
         echo "Synbolic copy of the data performed into: "$destination_dataset_dir_msad$current_dataset
         echo "Next operating the dataset windowing for these channels..."$list_channels
 
-        for window_size in 128; do # 256 512 1028; do
+        for window_size in 128 256 512 1028; do
             echo "Current window size..."$window_size
-            python3 create_windows_dataset.py --path $destination_dataset_dir_msad --save_dir $"/tmp/di38jul/windowed/" --metric_path $"data/benchmark_esa_binarized/m1/"$split$"/metrics_working_copy/" --metric R_AUC_PR -w $window_size --name ESA_ADB -chl $list_channels
+            # Dispatching the data processing
+            python3 create_windows_dataset.py --path $destination_dataset_dir_msad \
+		  --save_dir $destination_windowed_data$mini_dataset_id$split$"_all_targets/" \
+		 --metric_path $"data/benchmark_esa_binarized/"$mini_dataset_id$split$"/metrics_working_copy/" \
+		 --metric R_AUC_PR -w $window_size --name ESA_ADB -chl $list_channels \
+		 >> $current_dataset$"_"$split$"_"$window_size".out" &
             echo "done!"
         done        
     done
