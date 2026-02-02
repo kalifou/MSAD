@@ -18,7 +18,7 @@ import copy
 from datetime import datetime
 
 
-from utils_finetuning import apply_lora_to_model, detect_architecture, \
+from utils.finetuning import apply_lora_to_model, detect_architecture, \
     evaluate, freeze_layers, get_cosine_schedule, get_unfreeze_schedule, \
         apply_unfreeze, train_epoch, EarlyStopping, get_layerwise_optimizer
         
