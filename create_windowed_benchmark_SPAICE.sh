@@ -14,7 +14,9 @@ ms2_file_prefix="21_months."
 # adjust channels of interest
 # create directory of interest
 
+#source activate base
 source activate base
+#conda init bash
 conda activate MSAD_ESA
 
 for current_dataset in "ESA-Mission2-semi-supervised"; do # "ESA-Mission1-semi-supervised"; do
@@ -57,7 +59,7 @@ for current_dataset in "ESA-Mission2-semi-supervised"; do # "ESA-Mission1-semi-s
 		  --save_dir $destination_windowed_data$mini_dataset_id$split$"_all_targets/" \
 		 --metric_path $"data/benchmark_esa_binarized/"$mini_dataset_id$split$"/metrics_working_copy/" \
 		 --metric R_AUC_PR -w $window_size --name ESA_ADB -chl $list_channels \
-		 >> $current_dataset$"_"$split$"_"$window_size".out" &
+		 >> $current_dataset$"_"$split$"_"$window_size".out" 2>&1
             echo "done!"
         done        
     done
