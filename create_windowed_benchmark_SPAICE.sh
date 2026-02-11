@@ -19,12 +19,12 @@ source activate base
 #conda init bash
 conda activate MSAD_ESA
 
-for current_dataset in "ESA-Mission2-semi-supervised"; do # "ESA-Mission1-semi-supervised"; do
+for current_dataset in "ESA-Mission2-semi-supervised" "ESA-Mission1-semi-supervised"; do
     if [[ $current_dataset = "ESA-Mission1-semi-supervised" ]]
     then
       echo "Processing dataset 1."
       current_prefix=$ms1_file_prefix
-      list_channels=$(seq -s, 12 14) #$(seq -s, 12 52)$','$(seq -s, 57 66)$','$(seq -s, 70 76)
+      list_channels=$(seq -s, 12 52)$','$(seq -s, 57 66)$','$(seq -s, 70 76)
       mini_dataset_id="/m1/"
     elif [[ $current_dataset = "ESA-Mission2-semi-supervised" ]]
     then
@@ -34,7 +34,7 @@ for current_dataset in "ESA-Mission2-semi-supervised"; do # "ESA-Mission1-semi-s
       mini_dataset_id="/m2/"
     fi
     
-    for split in "train"; do #"test"; do
+    for split in "test"; do # "train" "test"; do
         if [[ $split = "train" ]]
         then
           echo "Processing train split."

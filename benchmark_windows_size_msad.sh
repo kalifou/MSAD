@@ -1,7 +1,7 @@
-
+mkdir -p /tmp/evals
 mkdir logs_finetuning/
 
-for window_size in 256; do #256 512 1024; do
+for window_size in 256; do # 128 256 512 1024; do
 
     model_name=$(basename results/weights/supervised/resnet_default_$window_size/model_*)
 
@@ -17,7 +17,7 @@ for window_size in 256; do #256 512 1024; do
 	    --weights=results/weights/supervised/sit_conv_patch_$window_size/$path_to_sit_weigths \
 	    --params=models/configuration/sit_conv_patch.json --use-lora --lora-rank=16 \
 	    --lora-alpha=32.0 --layer-wise-lr --backbone-lr=1e-5 --middle-lr=5e-5 --head-lr=1e-4 \
-	    --epochs=1 --batch=32 --window-size=$window_size >> logs_finetuning/logs_sit_$window_size.out 2>&1
+	    --epochs=1 --batch=32 --window-size=$window_size #>> logs_finetuning/logs_sit_$window_size.out 2>&1
     
     best_finetuned_weights_sit=$(grep results/finetuned/weights/sit_$window_size_........_......_best.pth \
 				      logs_finetuning/logs_sit_$window_size.out)
