@@ -71,6 +71,8 @@ def eval_deep_model(
             model_parameters['timeseries_size'] = window_size
 
         # Load model
+        import ipdb
+        ipdb.set_trace(context=35)
         model = deep_models[model_name](**model_parameters)
 
         # Check if model_path is specific file or dir

@@ -42,7 +42,7 @@ detector_names = [
  	'LSTM', ###
  	'MATRIXPROFILE', # 
  	#'NORMA', 
- 	'OCSVM', #
+ 	#'OCSVM', #
  	'PCA', #
  	'POLY', #
         'SAND_OFFLINE' #

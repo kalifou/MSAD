@@ -21,12 +21,12 @@ def filter_list_channels_evaluated(dir_models="data/benchmark_esa_binarized/m1/t
 	return list(s_all)
 
 
-def keep_intersection_of_available_channels(dir_models="data/benchmark_esa_binarized/m1/train/metrics_working_copy/"):
+def keep_intersection_of_available_channels(dir_models="data/benchmark_esa_binarized/m1/train/metrics_working_copy/", metric="ROC"):
     list_models = os.listdir(dir_models)    
     all_channels = list()
 
     for model_i in list_models:
-        local_model_roc_logs = dir_models + model_i + "/R_AUC_ROC.csv"
+        local_model_roc_logs = dir_models + model_i + "/R_AUC_" + metric + ".csv"
         model_i_roc_perfs = pd.read_csv(local_model_roc_logs)
         model_i_list_channels = [ch_c.split("@Channel_")[1] for ch_c in model_i_roc_perfs['Unnamed: 0']]
         #ipdb.set_trace(context=35)
@@ -39,7 +39,7 @@ def keep_intersection_of_available_channels(dir_models="data/benchmark_esa_binar
 
     list_not_included = set()
     for model_i in list_models:
-        local_model_roc_logs = dir_models + model_i + "/R_AUC_ROC.csv"
+        local_model_roc_logs = dir_models + model_i + "/R_AUC_" + metric + ".csv"
         model_i_roc_perfs = pd.read_csv(local_model_roc_logs)
         print(model_i, len(model_i_roc_perfs['Unnamed: 0']))
         local_df_model_mi = model_i_roc_perfs.copy()
@@ -68,4 +68,4 @@ def keep_intersection_of_available_channels(dir_models="data/benchmark_esa_binar
 
 
 if __name__ == "__main__":
-    keep_intersection_of_available_channels()
+    keep_intersection_of_available_channels(metric="PR")

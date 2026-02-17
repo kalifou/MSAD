@@ -21,6 +21,24 @@ import matplotlib.pyplot as plt
 from utils.timeseries_dataset import TimeseriesDataset
 from utils.config import *
 
+detector_names = [
+    'AE',                                                                                                                                          
+    'CNN',
+    'DAMP',
+    'HBOS',                                                                                                                                        
+    'IFOREST',
+    #'IFOREST1',                                                                                                                                    
+    'LOF',
+    'LSTM',
+    'MATRIXPROFILE',
+    'NORMA',
+    'OCSVM',
+    'PCA',
+    'POLY',
+    'SAND_OFFLINE'
+]
+
+
 import torch
 from torch.utils.data import DataLoader
 
@@ -87,7 +105,7 @@ class Evaluator:
             toc = perf_counter()
             
             #import ipdb
-            #ipdb.set_trace(context=25)
+            #ipdb.set_trace(context=55)
             
             # Save info
             all_preds.append(detector_names[most_voted[0][0]])

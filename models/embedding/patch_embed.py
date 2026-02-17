@@ -36,8 +36,9 @@ class EmbeddingStem(nn.Module):
 
 		assert(
 			sum([conv_patch, conv_stem, linear_patch]) == 1
-		), "Only one of three models should be active"
-
+		), "Only one of three models should be active";
+                #import ipdb;ipdb.set_trace(context=45)
+                
 		assert(
 			timeseries_size % window_size == 0
 		), 'Timeseries size should be divisible by the window size'
