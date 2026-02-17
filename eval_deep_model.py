@@ -8,7 +8,7 @@
 # @file : eval_deep_model
 #
 ########################################################################
-
+import ipdb
 import argparse
 import re
 import os
@@ -72,8 +72,14 @@ def eval_deep_model(
 
         # Load model
         import ipdb
-        ipdb.set_trace(context=35)
+        #ipdb.set_trace(context=35)
+        if model_name == "sit":
+            model_parameters['timeseries_size']= 256
+        elif model_name == "convnet":
+            model_parameters['original_length'] = 256
         model = deep_models[model_name](**model_parameters)
+        #ipdb.set_trace(context=35)
+        
 
         # Check if model_path is specific file or dir
         if os.path.isdir(model_path):
@@ -90,9 +96,12 @@ def eval_deep_model(
             model.eval()
             model.to('cuda')
         else:
-            import ipdb
-            #ipdb.set_trace(context=40)
+            if model_name == "sit":
+                model_path= "results/finetuned/weights/inception_time_256_20260217_184459_best.pth"
+                #"results/finetuned/weights/sit_256_20260211_164747_best.pth"
             ckpt = torch.load(model_path, map_location=torch.device('cpu'))
+            #import ipdb
+            #ipdb.set_trace(context=40)
             state_dict = ckpt.get('model_state_dict') or ckpt.get('state_dict') or ckpt.get('model') or ckpt
             model.load_state_dict(state_dict)
             #ipdb.set_trace(context=40)

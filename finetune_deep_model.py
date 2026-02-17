@@ -89,7 +89,9 @@ def finetune_deep_model(
     training_data = TimeseriesDataset(data_path, fnames=train_set)
     val_data = TimeseriesDataset(data_path, fnames=val_set)
     test_data = TimeseriesDataset(data_path, fnames=test_set)
-
+    
+    import ipdb
+    #ipdb.set_trace(context=55)
     print(
         f"Train: {len(training_data)} | Val: {len(val_data)} | Test: {len(test_data)}")
 
@@ -108,16 +110,20 @@ def finetune_deep_model(
     print("MODEL SETUP")
     print(f"{'='*80}")
 
+    #ipdb.set_trace(context=25)
     model_parameters = json_file(model_parameters_file)
     if 'original_length' in model_parameters:
         model_parameters['original_length'] = window_size
     if 'timeseries_size' in model_parameters:
         model_parameters['timeseries_size'] = window_size
-    if 'num_classes' in model_parameters:
-        model_parameters['num_classes'] = num_classes
+    #if 'num_classes' in model_parameters:
+    #    model_parameters['num_classes'] = num_classes
 
+    
+    #ipdb.set_trace(context=25)
     model = deep_models[model_name.lower()](**model_parameters).to(device)
-
+    #ipdb.set_trace(context=25)
+    
     # Load pretrained
     if pretrained_path and os.path.exists(pretrained_path):
         print(f"\nLoading pretrained: {pretrained_path}")
@@ -128,11 +134,19 @@ def finetune_deep_model(
                     'state_dict') or ckpt.get('model') or ckpt
             else:
                 state_dict = ckpt
+            #ipdb.set_trace(context=25)
+            
             model.load_state_dict(state_dict, strict=True)
             print("✓ Pretrained weights loaded")
         except Exception as e:
             print(f"⚠ Could not load weights: {e}")
-
+    
+    #ipdb.set_trace(context=25)  
+    if model_name == "inception_time":
+        model.linear = nn.Linear(in_features=model.linear.in_features, out_features=7, bias=True)
+    elif model_name == "convnet":
+        model.fc1[0] = nn.Linear(model.fc1[0].in_features, out_features=7, bias=True)
+    #ipdb.set_trace(context=25)
     # Detect architecture
     architecture = detect_architecture(model)
     print(f"\nDetected architecture: {architecture.upper()}")
@@ -275,8 +289,9 @@ def finetune_deep_model(
         print(f"  Val   - Loss: {val_metrics['loss']:.4f}, Acc: {val_metrics['accuracy']:.2f}%, "
               f"Top-3: {val_metrics['top3_accuracy']:.2f}%, Top-5: {val_metrics['top5_accuracy']:.2f}%")
 
+        #ipdb.set_trace(context=55)
         # Save best
-        if val_metrics['accuracy'] > best_val_acc:
+        if val_metrics['accuracy'] > best_val_acc or val_set == list():
             best_val_acc = val_metrics['accuracy']
             best_model_state = copy.deepcopy(model.state_dict())
             torch.save({
