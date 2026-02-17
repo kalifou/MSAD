@@ -121,7 +121,7 @@ def finetune_deep_model(
 
     
     #ipdb.set_trace(context=25)
-    model = deep_models[model_name.lower()](**model_parameters).to(device)
+    model = deep_models[model_name.lower()](**model_parameters)
     #ipdb.set_trace(context=25)
     
     # Load pretrained
@@ -147,6 +147,8 @@ def finetune_deep_model(
     elif model_name == "convnet":
         model.fc1[0] = nn.Linear(model.fc1[0].in_features, out_features=7, bias=True)
     #ipdb.set_trace(context=25)
+    
+    model = model.to(device)
     # Detect architecture
     architecture = detect_architecture(model)
     print(f"\nDetected architecture: {architecture.upper()}")
