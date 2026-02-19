@@ -23,17 +23,25 @@ from natsort import natsorted
 import ipdb
 
 
-def merge_scores(path, metric, save_path, source_dataset="TSB_UAD"):
+def merge_scores(path, 
+                 metric,
+                 save_path, 
+                 metrics_path=None,
+                 acc_path=None,
+                 source_dataset="TSB_UAD"):
     # Load MetricsLoader object
     
     if source_dataset == "TSB_UAD":
         local_metrics_path = TSB_metrics_path
         local_acc_tables_path = TSB_acc_tables_path
     elif source_dataset == "ESA_ADB":
-        local_metrics_path = ESA_ADB_metrics_path
-        local_acc_tables_path = ESA_ADB_acc_tables_path
+        
+        if metrics_path != None and acc_path != None:
+            local_metrics_path = metrics_path
+            local_acc_tables_path = acc_path
     
     metricsloader = MetricsLoader(local_metrics_path)
+    #ipdb.set_trace(context=45)
     
     # Check if given metric exists
     if metric.upper() not in metricsloader.get_names():
@@ -42,6 +50,8 @@ def merge_scores(path, metric, save_path, source_dataset="TSB_UAD"):
     # Read accuracy table, fix filenames & indexing, remove detectors scores
     acc_tables_path = os.path.join(local_acc_tables_path, "mergedTable_AUC_PR.csv")
     acc_tables = pd.read_csv(acc_tables_path)
+    #ipdb.set_trace(context=45)
+    
     if source_dataset == "ESA_ADB":
         acc_tables.columns.values[0] = 'filename'
         
@@ -122,10 +132,11 @@ def merge_scores(path, metric, save_path, source_dataset="TSB_UAD"):
 
     # Save the final dataframe
     final_df.to_csv(os.path.join(save_path, f'current_accuracy_{metric.upper()}.csv'), index=True)
-    print(final_df)
+    print(final_df, 0, 1,2)
 
 
-def merge_inference_times(path, save_path):
+def merge_inference_times(path, 
+                          save_path):
     detectors_inf_time_path = 'results/execution_time/detectors_inference_time.csv'
 
     # Read raw predictions of each model selector and fix indexing
@@ -189,8 +200,16 @@ if __name__ == "__main__":
                         help='Data used for the experiments of individual anomaly detectors. \
                             Option: <ESA_ADB, TSB_UAD>.', 
                             required=True)
+        
+    parser.add_argument('-mpth', '--metrics_path', type=str, help='path to the metrics labels of all individual methods.', required=True)
+    parser.add_argument('-apth', '--acc_path', type=str, help='path to the accuracy tables.', required=True)
+    
+        
 
     args = parser.parse_args()
+    metrics_path = args.metrics_path
+    acc_path = args.acc_path
+    
     assert args.dataset in ["TSB_UAD","ESA_ADB"]
     
     
@@ -199,11 +218,13 @@ if __name__ == "__main__":
             path=args.path, 
             metric=args.metric,
             save_path=args.save_path,
-            source_dataset=args.dataset
+            source_dataset=args.dataset,
+            metrics_path=metrics_path,
+            acc_path=acc_path
         )
     else:
         merge_inference_times(
             path=args.path, 
-            save_path=args.save_path,
+            save_path=args.save_path
         )
 
