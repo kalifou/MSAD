@@ -23,7 +23,12 @@ import numpy as np
 import sys
 
 
-def create_avg_ens(n_jobs=1, source_dataset="TSB_UAD", channel_id=-1):
+def create_avg_ens(n_jobs=1, 
+                   metrics_path_local=None,
+                   data_path_local=None,
+                   scores_path_local=None,
+                   source_dataset="TSB_UAD", 
+                   channel_id=-1):
     '''Create, fit and save the results for the 'Avg_ens' model
 
     :param n_jobs: Threads to use in parallel to compute the metrics faster
@@ -34,9 +39,15 @@ def create_avg_ens(n_jobs=1, source_dataset="TSB_UAD", channel_id=-1):
         data_path = TSB_data_path
         scores_path = TSB_scores_path
     else:
-        metrics_path = ESA_ADB_metrics_path
-        data_path = ESA_ADB_data_path
-        scores_path = ESA_ADB_scores_path
+        
+        if metrics_path_local != None and data_path_local != None and scores_path_local != None:
+            metrics_path = metrics_path_local
+            data_path = data_path_local
+            scores_path = scores_path_local
+        else:
+            metrics_path = ESA_ADB_metrics_path
+            data_path = ESA_ADB_data_path
+            scores_path = ESA_ADB_scores_path
     # Load metrics' names
     metricsloader = MetricsLoader(metrics_path)
     metrics = metricsloader.get_names()
@@ -92,15 +103,23 @@ if __name__ == "__main__":
         help='Channel id for with to evaluate the ensemble for '
     )
     parser.add_argument('-d', '--dataset', type=str, help='Data used for the experiments of individual anomaly detectors. Option: <ESA_ADB, TSB_UAD>.', required=True)
-    
-    
+    parser.add_argument('-mp', '--metrics_path', type=str, help='path to the metrics labels of all individual methods.', required=True)
+    parser.add_argument('-sp', '--scores_path', type=str, help='path to the score labels of all individual methods.', required=True)
+    parser.add_argument('-dp', '--data_path', type=str, help='path to the reference telemetry time series associated to the labels.' , required=True)
     
     args = parser.parse_args()
     n_jobs, source_dataset = args.n_jobs, args.dataset
     channel_id = args.channel_id
     
+    metrics_path = args.metrics_path
+    data_path = args.data_path
+    scores_path = args.scores_path
+    
     assert source_dataset in ["TSB_UAD","ESA_ADB"]
     
     create_avg_ens(n_jobs=n_jobs, 
                    source_dataset=source_dataset,
-                   channel_id=channel_id)
+                   channel_id=channel_id,
+                   metrics_path_local=metrics_path,
+                   data_path_local=data_path,
+                   scores_path_local=scores_path)
